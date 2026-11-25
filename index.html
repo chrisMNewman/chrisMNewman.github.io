@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resting Place — Campfire Under the Stars</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="scene" aria-label="Nighttime campfire in a dark forest under the stars"></canvas>
+
+  <!-- Top bar: subtle title & controls -->
+  <header class="top-bar">
+    <div class="brand">
+      <h1>Resting Place</h1>
+      <p id="status-text" class="status-text">Click the campfire to light it.</p>
+    </div>
+    <div class="top-controls">
+      <button id="btn-sound" class="icon-btn" type="button" aria-pressed="true" title="Toggle ambient sound">
+        <span id="sound-icon">🔊</span>
+        <span class="btn-label">Sound</span>
+      </button>
+      <button id="btn-fire-toggle" class="icon-btn hidden" type="button" title="Stoke or extinguish fire">
+        <span>🪵</span>
+        <span id="fire-toggle-label" class="btn-label">Extinguish</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Roast progress HUD (shown while roasting a marshmallow or hotdog) -->
+  <aside id="roast-hud" class="roast-hud hidden" aria-live="polite">
+    <div class="roast-hud-header">
+      <span id="roast-item-name">Marshmallow</span>
+      <span id="roast-stage" class="roast-stage">Raw</span>
+    </div>
+    <div class="roast-bar-track">
+      <div id="roast-bar-fill" class="roast-bar-fill"></div>
+      <div class="roast-sweet-spot" title="Sweet spot"></div>
+    </div>
+    <p class="roast-hint">Move closer to the flames to roast. Don't burn it!</p>
+    <div class="roast-actions">
+      <button id="btn-prepare" class="action-btn primary" type="button">Make S'more</button>
+      <button id="btn-eat-direct" class="action-btn" type="button">Eat Now</button>
+      <button id="btn-discard" class="action-btn subtle" type="button">Put Down</button>
+    </div>
+  </aside>
+
+  <!-- Plate / Eating overlay (for assembled S'more or Hotdog in a bun) -->
+  <aside id="plate-panel" class="plate-panel hidden" aria-live="polite">
+    <div class="plate-visual">
+      <canvas id="plate-canvas" width="220" height="140"></canvas>
+    </div>
+    <div class="plate-info">
+      <h2 id="plate-title">Warm S'more</h2>
+      <p id="plate-desc">Gooey golden marshmallow &amp; melting chocolate.</p>
+      <div class="plate-actions">
+        <button id="btn-bite" class="action-btn primary" type="button">Take a Bite</button>
+        <button id="btn-mustard" class="action-btn hidden" type="button">Add Mustard</button>
+        <button id="btn-plate-close" class="action-btn subtle" type="button">Set Aside</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Gentle floating toast for quiet feedback -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Bottom dock: food & resting controls -->
+  <nav class="dock" aria-label="Campfire activities">
+    <button id="btn-rest" class="dock-btn active" type="button" data-mode="rest">
+      <span class="dock-emoji">🌌</span>
+      <span>Rest</span>
+    </button>
+    <button id="btn-marshmallow" class="dock-btn" type="button" data-mode="marshmallow">
+      <span class="dock-emoji">🍡</span>
+      <span>Marshmallow</span>
+    </button>
+    <button id="btn-hotdog" class="dock-btn" type="button" data-mode="hotdog">
+      <span class="dock-emoji">🌭</span>
+      <span>Hotdog</span>
+    </button>
+    <button id="btn-stoke" class="dock-btn hidden" type="button">
+      <span class="dock-emoji">✨</span>
+      <span>Stoke Fire</span>
+    </button>
+  </nav>
+
+  <script src="app.js"></script>
+</body>
+</html>
