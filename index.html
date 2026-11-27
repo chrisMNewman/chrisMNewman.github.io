@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <meta name="theme-color" content="#050811" />
   <title>Resting Place — Campfire Under the Stars</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -20,14 +24,14 @@
         <span id="sound-icon">🔊</span>
         <span class="btn-label">Sound</span>
       </button>
-      <button id="btn-fire-toggle" class="icon-btn hidden" type="button" title="Stoke or extinguish fire">
+      <button id="btn-fire-toggle" class="icon-btn hidden" type="button" title="Light or extinguish fire">
         <span>🪵</span>
         <span id="fire-toggle-label" class="btn-label">Extinguish</span>
       </button>
     </div>
   </header>
 
-  <!-- Roast progress HUD (shown while roasting a marshmallow or hotdog) -->
+  <!-- Roast progress HUD (positioned at the top of the screen so it stays clear of the fire and stick) -->
   <aside id="roast-hud" class="roast-hud hidden" aria-live="polite">
     <div class="roast-hud-header">
       <span id="roast-item-name">Marshmallow</span>
@@ -37,11 +41,12 @@
       <div id="roast-bar-fill" class="roast-bar-fill"></div>
       <div class="roast-sweet-spot" title="Sweet spot"></div>
     </div>
-    <p class="roast-hint">Move closer to the flames to roast. Don't burn it!</p>
-    <div class="roast-actions">
-      <button id="btn-prepare" class="action-btn primary" type="button">Make S'more</button>
-      <button id="btn-eat-direct" class="action-btn" type="button">Eat Now</button>
-      <button id="btn-discard" class="action-btn subtle" type="button">Put Down</button>
+    <div class="roast-footer">
+      <p class="roast-hint">Hold near the flames to roast.</p>
+      <div class="roast-actions">
+        <button id="btn-prepare" class="action-btn primary" type="button">Make S'more</button>
+        <button id="btn-discard" class="action-btn subtle" type="button">Put Down</button>
+      </div>
     </div>
   </aside>
 
@@ -77,10 +82,6 @@
     <button id="btn-hotdog" class="dock-btn" type="button" data-mode="hotdog">
       <span class="dock-emoji">🌭</span>
       <span>Hotdog</span>
-    </button>
-    <button id="btn-stoke" class="dock-btn hidden" type="button">
-      <span class="dock-emoji">✨</span>
-      <span>Stoke Fire</span>
     </button>
   </nav>
 

@@ -5,7 +5,8 @@
 
 (() => {
   const canvas = document.getElementById("scene");
-  const ctx = canvas.getContext("2d");
+  // alpha: false prevents canvas compositing flashes on mobile Firefox
+  const ctx = canvas.getContext("2d", { alpha: false });
 
   const plateCanvas = document.getElementById("plate-canvas");
   const plateCtx = plateCanvas.getContext("2d");
@@ -16,14 +17,12 @@
   const soundIcon = document.getElementById("sound-icon");
   const btnFireToggle = document.getElementById("btn-fire-toggle");
   const fireToggleLabel = document.getElementById("fire-toggle-label");
-  const btnStoke = document.getElementById("btn-stoke");
 
   const roastHud = document.getElementById("roast-hud");
   const roastItemName = document.getElementById("roast-item-name");
   const roastStageEl = document.getElementById("roast-stage");
   const roastBarFill = document.getElementById("roast-bar-fill");
   const btnPrepare = document.getElementById("btn-prepare");
-  const btnEatDirect = document.getElementById("btn-eat-direct");
   const btnDiscard = document.getElementById("btn-discard");
 
   const platePanel = document.getElementById("plate-panel");
@@ -43,11 +42,11 @@
     width: window.innerWidth,
     height: window.innerHeight,
     dpr: Math.min(window.devicePixelRatio || 1, 2),
+    isTouch: false,
 
     fireLit: false,
-    fireIntensity: 0, // smoothly animates 0..1 (up to 1.35 when stoked)
+    fireIntensity: 0, // smoothly animates 0..1
     targetIntensity: 0,
-    stokeBoost: 0,
 
     mode: "rest", // "rest" | "marshmallow" | "hotdog"
     roastLevel: 0, // 0..100
@@ -57,10 +56,11 @@
     plate: null, // { type: "smore" | "hotdog", roastLevel, bitesLeft, maxBites, mustard }
 
     pointer: {
-      x: window.innerWidth * 0.68,
+      x: window.innerWidth * 0.65,
       y: window.innerHeight * 0.62,
       active: false,
       hoveringFire: false,
+      hoveringDeer: false,
     },
 
     soundEnabled: true,
@@ -68,7 +68,24 @@
   };
 
   // Campfire position (computed on resize)
-  const firePos = { x: 0, y: 0, radius: 68 };
+  const firePos = { x: 0, y: 0, radius: 64 };
+
+  // Rare background deer state
+  const deer = {
+    phase: "hidden", // "hidden" | "entering" | "resting" | "leaving" | "flying"
+    x: 0,
+    y: 0,
+    targetX: 0,
+    side: 1, // -1 (left) or 1 (right)
+    facing: 1,
+    alpha: 0,
+    timer: 22 + Math.random() * 24, // seconds until first rare appearance
+    walkPhase: 0,
+    flyVx: 0,
+    flyVy: 0,
+    glow: 0,
+    scale: 1,
+  };
 
   // Scene collections
   let stars = [];
@@ -80,6 +97,7 @@
   let embers = [];
   let smoke = [];
   let sizzleSparks = [];
+  let magicSparkles = [];
   let stones = [];
 
   // --------------------------------------------------------------------------
@@ -161,7 +179,6 @@
       let lastOut = 0;
       for (let i = 0; i < length; i++) {
         const white = Math.random() * 2 - 1;
-        // Soft brown-ish noise
         data[i] = (lastOut + 0.04 * white) / 1.04;
         lastOut = data[i];
         data[i] *= 2.8;
@@ -179,7 +196,7 @@
     updateFireVolume(intensity) {
       if (!this.initialized || !this.fireGain) return;
       const now = this.ctx.currentTime;
-      const target = Math.min(intensity, 1.3) * 0.22;
+      const target = Math.min(intensity, 1.1) * 0.22;
       this.fireGain.gain.setTargetAtTime(target, now, 0.18);
     }
 
@@ -212,7 +229,7 @@
       filter.frequency.value = 1400 + Math.random() * 2400;
 
       const gain = this.ctx.createGain();
-      gain.gain.value = (0.04 + Math.random() * 0.09) * Math.min(state.fireIntensity, 1.2);
+      gain.gain.value = (0.04 + Math.random() * 0.09) * Math.min(state.fireIntensity, 1.1);
 
       src.connect(filter);
       filter.connect(gain);
@@ -333,37 +350,101 @@
       gain.connect(this.masterGain);
       src.start(now);
     }
+
+    playMagicChime() {
+      if (!this.ctx || !state.soundEnabled) return;
+      const now = this.ctx.currentTime;
+      // Ascending ethereal pentatonic chime
+      const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+      notes.forEach((freq, idx) => {
+        const start = now + idx * 0.095;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, start);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.065, start + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.15);
+
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start(start);
+        osc.stop(start + 1.2);
+      });
+    }
   }
 
   const audio = new NightAudio();
 
   // --------------------------------------------------------------------------
-  // Scene Initialization & Resize
+  // Scene Initialization & Resize (Mobile Firefox Flash-Safe)
   // --------------------------------------------------------------------------
-  function resize() {
-    state.width = window.innerWidth;
-    state.height = window.innerHeight;
+  let lastEnvWidth = 0;
+  let lastEnvHeight = 0;
+
+  function resize(force = false) {
+    const newW = canvas.clientWidth || window.innerWidth;
+    const newH = canvas.clientHeight || window.innerHeight;
+
+    // Ignore minor vertical height jitters caused by mobile address bar animations
+    const widthChanged = Math.abs(newW - state.width) > 2;
+    const heightChangedSignificantly = Math.abs(newH - state.height) > 90;
+    if (!force && !widthChanged && !heightChangedSignificantly) {
+      return;
+    }
+
+    state.width = newW;
+    state.height = newH;
     state.dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     canvas.width = Math.floor(state.width * state.dpr);
     canvas.height = Math.floor(state.height * state.dpr);
     ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
 
+    const isMobileLayout = state.width < 640;
     firePos.x = state.width * 0.5;
-    firePos.y = state.height * 0.76;
-    firePos.radius = Math.max(54, Math.min(78, state.width * 0.065));
+    firePos.y = isMobileLayout ? state.height * 0.72 : state.height * 0.76;
+    firePos.radius = Math.max(52, Math.min(76, state.width * 0.065));
 
-    generateEnvironment();
+    // Only regenerate static environment when viewport changes meaningfully
+    if (force || Math.abs(newW - lastEnvWidth) > 30 || Math.abs(newH - lastEnvHeight) > 120) {
+      lastEnvWidth = newW;
+      lastEnvHeight = newH;
+      generateEnvironment();
+    } else {
+      updateStones();
+    }
+
+    // Repaint immediately so resizing the canvas never flashes a blank frame
+    render(performance.now());
+  }
+
+  function updateStones() {
+    stones = [];
+    const stoneCount = 11;
+    for (let i = 0; i < stoneCount; i++) {
+      const angle = (i / stoneCount) * Math.PI * 2 + 0.15;
+      stones.push({
+        x: firePos.x + Math.cos(angle) * (firePos.radius * 0.92),
+        y: firePos.y + Math.sin(angle) * (firePos.radius * 0.34) + 14,
+        rx: 13 + (i % 3) * 3,
+        ry: 8 + (i % 2) * 2.5,
+        rot: Math.sin(i * 2.1) * 0.25,
+        shade: 34 + (i % 4) * 5,
+      });
+    }
+    stones.sort((a, b) => a.y - b.y);
   }
 
   function generateEnvironment() {
     const w = state.width;
     const h = state.height;
-    const horizon = h * 0.66;
+    const horizon = h * 0.64;
 
     // Stars
     const starCount = Math.floor((w * h) / 4800);
-    stars = Array.from({ length: Math.max(90, Math.min(260, starCount)) }, () => ({
+    stars = Array.from({ length: Math.max(85, Math.min(250, starCount)) }, () => ({
       x: Math.random() * w,
       y: Math.random() * (horizon * 0.92),
       r: 0.5 + Math.random() * 1.45,
@@ -374,7 +455,7 @@
     }));
 
     // Fireflies
-    fireflies = Array.from({ length: 18 }, () => ({
+    fireflies = Array.from({ length: 16 }, () => ({
       x: Math.random() * w,
       y: horizon * 0.72 + Math.random() * (h * 0.22),
       vx: (Math.random() - 0.5) * 14,
@@ -388,7 +469,6 @@
     treesBack = [];
     for (let x = -40; x < w + 60; x += 26 + Math.random() * 22) {
       const distFromCenter = Math.abs(x - w * 0.5) / (w * 0.5);
-      // Slight clearing in the center
       const clearingFactor = 0.55 + distFromCenter * 0.6;
       treesBack.push({
         x,
@@ -403,7 +483,7 @@
     treesFront = [];
     for (let x = -30; x < w + 40; x += 38 + Math.random() * 32) {
       const distFromCenter = Math.abs(x - w * 0.5) / (w * 0.5);
-      if (distFromCenter < 0.34) continue; // Keep clearing open around the campfire
+      if (distFromCenter < 0.34) continue;
       treesFront.push({
         x,
         baseY: horizon + 34 + Math.random() * 34,
@@ -413,22 +493,7 @@
       });
     }
 
-    // Stone ring around campfire
-    stones = [];
-    const stoneCount = 11;
-    for (let i = 0; i < stoneCount; i++) {
-      const angle = (i / stoneCount) * Math.PI * 2 + 0.15;
-      stones.push({
-        x: firePos.x + Math.cos(angle) * (firePos.radius * 0.92),
-        y: firePos.y + Math.sin(angle) * (firePos.radius * 0.34) + 14,
-        rx: 13 + (i % 3) * 3,
-        ry: 8 + (i % 2) * 2.5,
-        rot: (Math.sin(i * 2.1) * 0.25),
-        shade: 34 + (i % 4) * 5,
-      });
-    }
-    // Sort stones back-to-front by Y
-    stones.sort((a, b) => a.y - b.y);
+    updateStones();
   }
 
   // --------------------------------------------------------------------------
@@ -444,46 +509,28 @@
   }
 
   // --------------------------------------------------------------------------
-  // Fire Actions
+  // Fire Actions (no stoking once lit)
   // --------------------------------------------------------------------------
   function lightFire() {
+    if (state.fireLit) return;
     audio.init();
-    if (!state.fireLit) {
-      state.fireLit = true;
-      state.targetIntensity = 1;
-      audio.playIgnite();
-      burstEmbers(26);
-      statusText.textContent = "The fire is warm. Rest, or roast marshmallows & hotdogs.";
-      btnFireToggle.classList.remove("hidden");
-      btnStoke.classList.remove("hidden");
-      fireToggleLabel.textContent = "Extinguish";
-      showToast("The campfire crackles to life.");
-    } else {
-      stokeFire();
-    }
-  }
-
-  function stokeFire() {
-    if (!state.fireLit) {
-      lightFire();
-      return;
-    }
-    audio.init();
-    state.stokeBoost = 0.42;
-    burstEmbers(22);
+    state.fireLit = true;
+    state.targetIntensity = 1;
     audio.playIgnite();
-    showToast("You stoke the fire. Embers drift toward the stars.");
+    burstEmbers(24);
+    statusText.textContent = "The fire is warm. Rest, or roast marshmallows & hotdogs.";
+    btnFireToggle.classList.remove("hidden");
+    fireToggleLabel.textContent = "Extinguish";
+    showToast("The campfire crackles to life.");
   }
 
   function extinguishFire() {
     state.fireLit = false;
     state.targetIntensity = 0;
-    state.stokeBoost = 0;
     setMode("rest");
     closePlate();
     statusText.textContent = "The embers fade. Click the campfire to relight it.";
     fireToggleLabel.textContent = "Light Fire";
-    btnStoke.classList.add("hidden");
     showToast("The fire settles into quiet darkness.");
   }
 
@@ -503,6 +550,130 @@
   }
 
   // --------------------------------------------------------------------------
+  // Rare Background Deer Logic
+  // --------------------------------------------------------------------------
+  function spawnDeer() {
+    const horizon = state.height * 0.64;
+    deer.side = Math.random() < 0.5 ? -1 : 1;
+    deer.facing = -deer.side; // walk inward from the treeline
+    deer.scale = state.width < 640 ? 0.78 : 0.95;
+    deer.y = horizon + 20;
+
+    // Start near the outer woods, walk into a visible clearing spot on the left or right
+    const margin = Math.max(48, state.width * 0.08);
+    deer.x = deer.side === -1 ? margin * 0.4 : state.width - margin * 0.4;
+    deer.targetX =
+      deer.side === -1
+        ? Math.max(85, state.width * 0.22)
+        : Math.min(state.width - 85, state.width * 0.78);
+
+    deer.alpha = 0;
+    deer.glow = 0;
+    deer.walkPhase = 0;
+    deer.phase = "entering";
+  }
+
+  function triggerDeerMagic() {
+    if (deer.phase === "hidden" || deer.phase === "flying") return;
+    audio.init();
+    audio.playMagicChime();
+
+    deer.phase = "flying";
+    deer.glow = 1;
+    deer.flyVx = deer.facing * (78 + Math.random() * 34);
+    deer.flyVy = -92;
+
+    // Initial burst of magical starlight sparkles
+    for (let i = 0; i < 32; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 25 + Math.random() * 85;
+      magicSparkles.push({
+        x: deer.x + (Math.random() - 0.5) * 38,
+        y: deer.y - 24 + (Math.random() - 0.5) * 32,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - 20,
+        size: 1.6 + Math.random() * 2.8,
+        life: 1,
+        decay: 0.55 + Math.random() * 0.55,
+        hue: Math.random() > 0.45 ? "#fff4c8" : "#bfe2ff",
+      });
+    }
+
+    showToast("The forest deer sparkles and takes flight into the stars.", 3200);
+  }
+
+  function isPointOverDeer(x, y) {
+    if (deer.phase === "hidden" || deer.phase === "flying" || deer.alpha < 0.25) return false;
+    const dx = x - deer.x;
+    const dy = y - (deer.y - 24 * deer.scale);
+    return Math.hypot(dx, dy) < 46 * deer.scale;
+  }
+
+  function updateDeer(dt) {
+    if (deer.phase === "hidden") {
+      deer.timer -= dt;
+      if (deer.timer <= 0) {
+        spawnDeer();
+      }
+      return;
+    }
+
+    if (deer.phase === "entering") {
+      deer.alpha = Math.min(1, deer.alpha + dt * 0.7);
+      deer.walkPhase += dt * 4.5;
+      const dir = Math.sign(deer.targetX - deer.x);
+      deer.x += dir * 26 * dt;
+      if (Math.abs(deer.targetX - deer.x) < 4) {
+        deer.phase = "resting";
+        deer.timer = 13 + Math.random() * 10; // linger calmly
+      }
+    } else if (deer.phase === "resting") {
+      deer.alpha = 1;
+      deer.timer -= dt;
+      if (deer.timer <= 0) {
+        deer.phase = "leaving";
+        deer.facing = deer.side; // turn back toward the trees
+      }
+    } else if (deer.phase === "leaving") {
+      deer.walkPhase += dt * 4.2;
+      deer.x += deer.side * 24 * dt;
+      deer.alpha = Math.max(0, deer.alpha - dt * 0.45);
+      if (deer.alpha <= 0.01) {
+        deer.phase = "hidden";
+        deer.timer = 40 + Math.random() * 45; // rare reappearance
+      }
+    } else if (deer.phase === "flying") {
+      deer.walkPhase += dt * 9;
+      deer.flyVy -= 26 * dt; // gently accelerates skyward
+      deer.x += deer.flyVx * dt;
+      deer.y += deer.flyVy * dt;
+      deer.glow = Math.min(1.4, deer.glow + dt * 0.4);
+
+      // Trail of twinkling sparkles
+      if (Math.random() < dt * 42) {
+        magicSparkles.push({
+          x: deer.x + (Math.random() - 0.5) * 34 * deer.scale,
+          y: deer.y - 18 * deer.scale + (Math.random() - 0.5) * 24 * deer.scale,
+          vx: (Math.random() - 0.5) * 24 - deer.flyVx * 0.15,
+          vy: 14 + Math.random() * 28,
+          size: 1.4 + Math.random() * 2.5,
+          life: 1,
+          decay: 0.65 + Math.random() * 0.55,
+          hue: Math.random() > 0.4 ? "#fff2c2" : "#c7e4ff",
+        });
+      }
+
+      if (deer.y < state.height * 0.18) {
+        deer.alpha = Math.max(0, deer.alpha - dt * 0.9);
+      }
+      if (deer.y < -80 || deer.alpha <= 0.01) {
+        deer.phase = "hidden";
+        deer.timer = 45 + Math.random() * 50;
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Roasting & Food Modes
   // --------------------------------------------------------------------------
   function setMode(newMode) {
@@ -516,6 +687,12 @@
     state.roastLevel = 0;
     state.isNearHeat = false;
 
+    // Place the stick comfortably beside the fire when starting on mobile/desktop
+    if (newMode !== "rest") {
+      state.pointer.x = firePos.x + firePos.radius * 1.45;
+      state.pointer.y = firePos.y - firePos.radius * 0.75;
+    }
+
     dockButtons.forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.mode === newMode);
     });
@@ -528,18 +705,18 @@
     } else if (newMode === "marshmallow") {
       roastItemName.textContent = "Marshmallow";
       btnPrepare.textContent = "Make S'more";
-      btnEatDirect.textContent = "Eat Marshmallow";
       roastHud.classList.remove("hidden");
       statusText.textContent = "Hold the marshmallow near the flames to toast it golden.";
       updateRoastHUD();
     } else if (newMode === "hotdog") {
       roastItemName.textContent = "Campfire Hotdog";
       btnPrepare.textContent = "Put in Bun";
-      btnEatDirect.textContent = "Eat off Stick";
       roastHud.classList.remove("hidden");
       statusText.textContent = "Roast the hotdog over the fire until it sizzles.";
       updateRoastHUD();
     }
+
+    updateCursor();
   }
 
   function getRoastStage(type, level) {
@@ -577,10 +754,10 @@
       mustard: false,
     };
 
-    // Hide roasting stick while eating
     state.mode = "rest";
     roastHud.classList.add("hidden");
     dockButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === "rest"));
+    updateCursor();
 
     if (plateType === "smore") {
       plateTitle.textContent = `${stage.label} S'more`;
@@ -630,17 +807,6 @@
     drawPlate();
   }
 
-  function eatDirectly() {
-    if (state.mode === "rest") return;
-    audio.init();
-    audio.playBite();
-    const stage = getRoastStage(state.mode, state.roastLevel);
-    const label = state.mode === "marshmallow" ? "marshmallow" : "hotdog";
-    showToast(`You eat the ${stage.label.toLowerCase()} ${label} right off the stick.`);
-    state.roastLevel = 0;
-    updateRoastHUD();
-  }
-
   // --------------------------------------------------------------------------
   // Drawing the Plate (S'more or Hotdog in a Bun)
   // --------------------------------------------------------------------------
@@ -653,7 +819,6 @@
 
     const bitesTaken = p.maxBites - p.bitesLeft;
 
-    // Campfire tin plate
     plateCtx.save();
     plateCtx.fillStyle = "#263042";
     plateCtx.strokeStyle = "rgba(255, 226, 185, 0.28)";
@@ -669,7 +834,6 @@
     plateCtx.ellipse(w / 2, h * 0.72, 68, 20, 0, 0, Math.PI * 2);
     plateCtx.stroke();
 
-    // Clip bites from the right side
     if (bitesTaken > 0) {
       plateCtx.beginPath();
       const cutX = w - bitesTaken * 46 - 24;
@@ -680,22 +844,18 @@
     if (p.type === "smore") {
       const mColor = lerpRoastColor("marshmallow", p.roastLevel);
 
-      // Bottom graham cracker
       drawRoundedRect(plateCtx, 58, 80, 104, 16, 4, "#c88d4b", "#8d5b27");
 
-      // Melting chocolate bar
       plateCtx.fillStyle = "#3f2214";
       plateCtx.beginPath();
       plateCtx.roundRect(62, 70, 96, 12, 4);
       plateCtx.fill();
-      // Chocolate drips
       plateCtx.beginPath();
       plateCtx.arc(78, 83, 5, 0, Math.PI * 2);
       plateCtx.arc(114, 84, 6, 0, Math.PI * 2);
       plateCtx.arc(140, 82, 4.5, 0, Math.PI * 2);
       plateCtx.fill();
 
-      // Squished roasted marshmallow
       plateCtx.fillStyle = mColor;
       plateCtx.beginPath();
       plateCtx.roundRect(64, 48, 92, 26, 12);
@@ -704,12 +864,10 @@
       plateCtx.lineWidth = 1.5;
       plateCtx.stroke();
 
-      // Top graham cracker (slightly tilted)
       plateCtx.save();
       plateCtx.translate(110, 44);
       plateCtx.rotate(-0.04);
       drawRoundedRect(plateCtx, -52, -8, 104, 16, 4, "#d69a55", "#8d5b27");
-      // Cracker perforations
       plateCtx.fillStyle = "rgba(115, 70, 26, 0.45)";
       for (let i = -36; i <= 36; i += 18) {
         plateCtx.beginPath();
@@ -718,19 +876,15 @@
       }
       plateCtx.restore();
     } else {
-      // Hotdog in a bun
       const dogColor = lerpRoastColor("hotdog", p.roastLevel);
 
-      // Back bun half
       drawRoundedRect(plateCtx, 42, 54, 136, 32, 16, "#dba35c", "#a56f32");
 
-      // Roasted hotdog
       plateCtx.fillStyle = dogColor;
       plateCtx.beginPath();
       plateCtx.roundRect(32, 50, 156, 26, 13);
       plateCtx.fill();
 
-      // Grill marks if roasted
       if (p.roastLevel > 35) {
         plateCtx.strokeStyle = `rgba(38, 14, 8, ${Math.min(0.75, (p.roastLevel - 30) / 80)})`;
         plateCtx.lineWidth = 3;
@@ -742,7 +896,6 @@
         }
       }
 
-      // Mustard drizzle
       if (p.mustard) {
         plateCtx.strokeStyle = "#f2c938";
         plateCtx.lineWidth = 4;
@@ -756,7 +909,6 @@
         plateCtx.stroke();
       }
 
-      // Front bun lip
       drawRoundedRect(plateCtx, 44, 68, 132, 24, 12, "#e8b46d", "#b57c3a");
     }
 
@@ -775,7 +927,6 @@
     }
   }
 
-  // Color interpolation for realistic roasting progression
   function lerpColor(a, b, t) {
     const ah = parseInt(a.replace("#", ""), 16);
     const bh = parseInt(b.replace("#", ""), 16);
@@ -805,7 +956,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Pointer & Click Interactions
+  // Pointer & Touch Interactions
   // --------------------------------------------------------------------------
   function isPointOverFire(x, y) {
     const dx = x - firePos.x;
@@ -813,29 +964,45 @@
     return Math.hypot(dx, dy) < firePos.radius * 1.25;
   }
 
-  function updatePointer(clientX, clientY) {
-    state.pointer.x = clientX;
-    state.pointer.y = clientY;
-    state.pointer.active = true;
-    state.pointer.hoveringFire = isPointOverFire(clientX, clientY);
-
-    if (state.mode !== "rest") {
-      canvas.style.cursor = "none";
-    } else if (state.pointer.hoveringFire) {
+  function updateCursor() {
+    if (state.mode !== "rest" && !state.isTouch) {
+      canvas.style.cursor = state.pointer.hoveringDeer ? "pointer" : "none";
+    } else if (state.pointer.hoveringDeer || (!state.fireLit && state.pointer.hoveringFire)) {
       canvas.style.cursor = "pointer";
     } else {
       canvas.style.cursor = "default";
     }
   }
 
+  function updatePointer(clientX, clientY, pointerType) {
+    state.isTouch = pointerType === "touch";
+    // Lift the stick tip slightly above the user's finger on touch screens
+    const yOffset = state.isTouch && state.mode !== "rest" ? -42 : 0;
+
+    state.pointer.x = clientX;
+    state.pointer.y = Math.max(40, clientY + yOffset);
+    state.pointer.active = true;
+    state.pointer.hoveringFire = isPointOverFire(clientX, clientY);
+    state.pointer.hoveringDeer = isPointOverDeer(clientX, clientY);
+    updateCursor();
+  }
+
   canvas.addEventListener("pointermove", (e) => {
-    updatePointer(e.clientX, e.clientY);
+    updatePointer(e.clientX, e.clientY, e.pointerType);
   });
 
   canvas.addEventListener("pointerdown", (e) => {
-    updatePointer(e.clientX, e.clientY);
     audio.init();
-    if (state.mode === "rest" && isPointOverFire(e.clientX, e.clientY)) {
+
+    // Check raw tap coordinates for deer first (works in any mode)
+    if (isPointOverDeer(e.clientX, e.clientY)) {
+      triggerDeerMagic();
+      return;
+    }
+
+    updatePointer(e.clientX, e.clientY, e.pointerType);
+
+    if (state.mode === "rest" && !state.fireLit && isPointOverFire(e.clientX, e.clientY)) {
       lightFire();
     }
   });
@@ -854,8 +1021,6 @@
     else lightFire();
   });
 
-  btnStoke.addEventListener("click", stokeFire);
-
   dockButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
       audio.init();
@@ -868,7 +1033,6 @@
     else if (state.mode === "hotdog") openPlate("hotdog");
   });
 
-  btnEatDirect.addEventListener("click", eatDirectly);
   btnDiscard.addEventListener("click", () => setMode("rest"));
 
   btnBite.addEventListener("click", takeBite);
@@ -880,7 +1044,8 @@
   });
   btnPlateClose.addEventListener("click", closePlate);
 
-  window.addEventListener("resize", resize);
+  window.addEventListener("resize", () => resize(false));
+  window.addEventListener("orientationchange", () => setTimeout(() => resize(true), 120));
 
   // --------------------------------------------------------------------------
   // Update Loop
@@ -889,12 +1054,12 @@
 
   function update(dt, now) {
     // Smooth fire intensity
-    if (state.stokeBoost > 0) {
-      state.stokeBoost = Math.max(0, state.stokeBoost - dt * 0.16);
-    }
-    const desired = state.fireLit ? state.targetIntensity + state.stokeBoost : 0;
+    const desired = state.fireLit ? state.targetIntensity : 0;
     state.fireIntensity += (desired - state.fireIntensity) * Math.min(1, dt * 3.5);
     audio.updateFireVolume(state.fireIntensity);
+
+    // Update rare deer
+    updateDeer(dt);
 
     // Occasional shooting star
     if (Math.random() < dt * 0.09) {
@@ -915,7 +1080,7 @@
     }
 
     // Fireflies
-    const horizon = state.height * 0.66;
+    const horizon = state.height * 0.64;
     for (const f of fireflies) {
       f.x += f.vx * dt + Math.sin(now * 0.001 + f.phase) * 6 * dt;
       f.y += f.vy * dt + Math.cos(now * 0.0012 + f.phase) * 4 * dt;
@@ -928,23 +1093,21 @@
     // Spawn flames, embers, smoke when fire is lit
     if (state.fireIntensity > 0.05) {
       const rate = state.fireIntensity;
-      // Flame tongues
-      if (Math.random() < rate * 0.95) {
+      if (Math.random() < rate * 0.92) {
         flames.push({
-          x: firePos.x + (Math.random() - 0.5) * 34 * Math.min(rate, 1.2),
+          x: firePos.x + (Math.random() - 0.5) * 32 * rate,
           y: firePos.y + 2,
           vx: (Math.random() - 0.5) * 14,
           vy: -(52 + Math.random() * 58) * rate,
-          size: (14 + Math.random() * 18) * Math.min(rate, 1.25),
+          size: (14 + Math.random() * 18) * rate,
           life: 1,
           decay: 1.45 + Math.random() * 0.8,
         });
       }
 
-      // Embers
       if (Math.random() < dt * 10 * rate) {
         embers.push({
-          x: firePos.x + (Math.random() - 0.5) * 36,
+          x: firePos.x + (Math.random() - 0.5) * 34,
           y: firePos.y - 12,
           vx: (Math.random() - 0.5) * 26,
           vy: -(38 + Math.random() * 68) * rate,
@@ -955,7 +1118,6 @@
         });
       }
 
-      // Soft smoke wisps
       if (Math.random() < dt * 3.5 * rate) {
         smoke.push({
           x: firePos.x + (Math.random() - 0.5) * 22,
@@ -1003,23 +1165,34 @@
       if (sp.life <= 0) sizzleSparks.splice(i, 1);
     }
 
-    // Roasting logic
+    for (let i = magicSparkles.length - 1; i >= 0; i--) {
+      const m = magicSparkles[i];
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      m.vx *= Math.pow(0.92, dt * 60);
+      m.life -= m.decay * dt;
+      if (m.life <= 0) magicSparkles.splice(i, 1);
+    }
+
+    // Roasting logic — normalized to firePos.radius so desktop & mobile roast at the exact same speed (matching mobile pace)
     if (state.mode !== "rest" && state.fireLit) {
       const heatCenterX = firePos.x;
-      const heatCenterY = firePos.y - 42;
+      const heatCenterY = firePos.y - firePos.radius * 0.72;
       const dx = state.pointer.x - heatCenterX;
       const dy = state.pointer.y - heatCenterY;
-      const dist = Math.hypot(dx, dy);
+      const normDist = Math.hypot(dx, dy) / firePos.radius;
 
-      const heatRadius = 115;
-      if (dist < heatRadius) {
+      const maxHeatRadius = 2.2; // matches mobile's ~115px / 52px ratio
+      if (normDist < maxHeatRadius) {
         state.isNearHeat = true;
-        const proximity = 1 - dist / heatRadius; // 0..1
+        const proximity = Math.max(0, Math.min(1, 1 - normDist / maxHeatRadius));
         const speedMultiplier = state.mode === "marshmallow" ? 16 : 12;
-        state.roastLevel = Math.min(100, state.roastLevel + proximity * speedMultiplier * state.fireIntensity * dt);
+        state.roastLevel = Math.min(
+          100,
+          state.roastLevel + proximity * speedMultiplier * state.fireIntensity * dt
+        );
         updateRoastHUD();
 
-        // Sizzle / roast steam particles
         state.sizzleTimer -= dt;
         if (state.sizzleTimer <= 0 && proximity > 0.25) {
           state.sizzleTimer = state.mode === "hotdog" ? 0.14 : 0.24;
@@ -1048,11 +1221,14 @@
   function render(now) {
     const w = state.width;
     const h = state.height;
-    const horizon = h * 0.66;
-    const flicker = state.fireIntensity > 0 ? 0.92 + Math.sin(now * 0.017) * 0.05 + Math.sin(now * 0.031) * 0.03 : 0;
+    const horizon = h * 0.64;
+    const flicker =
+      state.fireIntensity > 0
+        ? 0.93 + Math.sin(now * 0.017) * 0.045 + Math.sin(now * 0.031) * 0.025
+        : 0;
     const glowStrength = state.fireIntensity * flicker;
 
-    // 1. Night Sky
+    // 1. Night Sky (opaque fill prevents mobile Firefox flashes)
     const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon + 30);
     skyGrad.addColorStop(0, "#040710");
     skyGrad.addColorStop(0.55, "#0a1326");
@@ -1105,15 +1281,14 @@
         12,
         firePos.x,
         firePos.y - 16,
-        Math.max(w * 0.42, 340) * Math.min(1.2, 0.7 + glowStrength * 0.4)
+        Math.max(w * 0.42, 320) * Math.min(1.15, 0.7 + glowStrength * 0.4)
       );
-      ambientGlow.addColorStop(0, `rgba(255, 158, 62, ${0.34 * Math.min(glowStrength, 1.2)})`);
-      ambientGlow.addColorStop(0.35, `rgba(224, 102, 34, ${0.14 * Math.min(glowStrength, 1.2)})`);
+      ambientGlow.addColorStop(0, `rgba(255, 158, 62, ${0.34 * Math.min(glowStrength, 1.1)})`);
+      ambientGlow.addColorStop(0.35, `rgba(224, 102, 34, ${0.14 * Math.min(glowStrength, 1.1)})`);
       ambientGlow.addColorStop(1, "rgba(224, 102, 34, 0)");
       ctx.fillStyle = ambientGlow;
       ctx.fillRect(0, 0, w, h);
 
-      // Ground warm pool
       const groundGlow = ctx.createRadialGradient(
         firePos.x,
         firePos.y + 12,
@@ -1122,8 +1297,8 @@
         firePos.y + 12,
         firePos.radius * 3.8
       );
-      groundGlow.addColorStop(0, `rgba(255, 168, 72, ${0.42 * Math.min(glowStrength, 1.2)})`);
-      groundGlow.addColorStop(0.55, `rgba(180, 78, 24, ${0.16 * Math.min(glowStrength, 1.2)})`);
+      groundGlow.addColorStop(0, `rgba(255, 168, 72, ${0.42 * Math.min(glowStrength, 1.1)})`);
+      groundGlow.addColorStop(0.55, `rgba(180, 78, 24, ${0.16 * Math.min(glowStrength, 1.1)})`);
       groundGlow.addColorStop(1, "rgba(180, 78, 24, 0)");
       ctx.fillStyle = groundGlow;
       ctx.beginPath();
@@ -1131,10 +1306,15 @@
       ctx.fill();
     }
 
-    // 7. Foreground Framing Woods
+    // 7. Rare Background Deer (drawn near the treeline; when flying, floats above everything)
+    if (deer.phase !== "hidden" && deer.phase !== "flying") {
+      drawDeer(glowStrength, now);
+    }
+
+    // 8. Foreground Framing Woods
     drawForestLayer(treesFront, "#050910", glowStrength);
 
-    // 8. Fireflies in the Dark Woods
+    // 9. Fireflies in the Dark Woods
     for (const f of fireflies) {
       const pulse = 0.2 + 0.8 * Math.pow(0.5 + 0.5 * Math.sin(now * 0.0022 * f.speed + f.phase), 2);
       ctx.fillStyle = `rgba(218, 245, 138, ${pulse * 0.7})`;
@@ -1148,15 +1328,21 @@
       ctx.fill();
     }
 
-    // 9. Campfire Pit, Logs, Smoke, Flames, Embers
+    // 10. Campfire Pit, Logs, Smoke, Flames, Embers
     drawCampfire(glowStrength, now);
 
-    // 10. Roasting Stick (if holding marshmallow or hotdog)
+    // 11. Flying Deer & Magic Sparkles (drawn in front of trees/sky when ascending)
+    if (deer.phase === "flying") {
+      drawDeer(glowStrength, now);
+    }
+    drawMagicSparkles(now);
+
+    // 12. Roasting Stick (if holding marshmallow or hotdog)
     if (state.mode !== "rest") {
       drawRoastingStick();
     }
 
-    // 11. Sizzle / steam sparks
+    // 13. Sizzle / steam sparks
     for (const sp of sizzleSparks) {
       ctx.globalAlpha = sp.life;
       ctx.fillStyle = sp.color;
@@ -1167,9 +1353,149 @@
     ctx.globalAlpha = 1;
   }
 
+  function drawDeer(glowStrength, now) {
+    ctx.save();
+    ctx.globalAlpha = deer.alpha;
+    ctx.translate(deer.x, deer.y);
+    ctx.scale(deer.facing * deer.scale, deer.scale);
+
+    // Magical aura when flying or subtly hovered
+    if (deer.phase === "flying" || state.pointer.hoveringDeer) {
+      const auraStrength = deer.phase === "flying" ? 0.45 : 0.18;
+      const aura = ctx.createRadialGradient(0, -24, 6, 0, -24, 58);
+      aura.addColorStop(0, `rgba(255, 244, 198, ${auraStrength})`);
+      aura.addColorStop(0.55, `rgba(170, 215, 255, ${auraStrength * 0.45})`);
+      aura.addColorStop(1, "rgba(170, 215, 255, 0)");
+      ctx.fillStyle = aura;
+      ctx.beginPath();
+      ctx.arc(0, -24, 58, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Slight graceful tilt when flying
+    if (deer.phase === "flying") {
+      ctx.rotate(-0.22);
+    }
+
+    const isWalking = deer.phase === "entering" || deer.phase === "leaving" || deer.phase === "flying";
+    const legSwing = isWalking ? Math.sin(deer.walkPhase) * (deer.phase === "flying" ? 7 : 4.5) : 0;
+    const breath = Math.sin(now * 0.0022) * 0.7;
+
+    // Color transitions from dark moonlit silhouette to glowing starlight spirit when flying
+    const bodyColor =
+      deer.phase === "flying"
+        ? "#e9f3ff"
+        : glowStrength > 0.2
+          ? "#181d29"
+          : "#111826";
+
+    ctx.fillStyle = bodyColor;
+    ctx.strokeStyle = bodyColor;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // Legs
+    ctx.lineWidth = 3.2;
+    // Back legs
+    ctx.beginPath();
+    ctx.moveTo(-14, -18);
+    ctx.lineTo(-16 - legSwing, 0);
+    ctx.moveTo(-10, -18);
+    ctx.lineTo(-11 + legSwing * 0.8, 0);
+    // Front legs
+    ctx.moveTo(11, -18);
+    ctx.lineTo(13 + legSwing, 0);
+    ctx.moveTo(15, -18);
+    ctx.lineTo(16 - legSwing * 0.8, 0);
+    ctx.stroke();
+
+    // Tail
+    ctx.beginPath();
+    ctx.ellipse(-20, -24 + breath, 4, 2.2, -0.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Torso
+    ctx.beginPath();
+    ctx.ellipse(-1, -23 + breath, 19, 8.5, -0.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Neck
+    ctx.beginPath();
+    ctx.moveTo(11, -26 + breath);
+    ctx.lineTo(19, -41 + breath);
+    ctx.lineTo(24, -39 + breath);
+    ctx.lineTo(17, -21 + breath);
+    ctx.closePath();
+    ctx.fill();
+
+    // Head & snout
+    ctx.beginPath();
+    ctx.ellipse(24, -41 + breath, 7.5, 4.2, 0.15, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Ear
+    ctx.beginPath();
+    ctx.ellipse(19, -45 + breath, 3.8, 1.8, -0.7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Antlers
+    ctx.lineWidth = 1.7;
+    ctx.beginPath();
+    ctx.moveTo(21, -44 + breath);
+    ctx.lineTo(19, -54 + breath);
+    ctx.lineTo(15, -58 + breath);
+    ctx.moveTo(19, -51 + breath);
+    ctx.lineTo(24, -55 + breath);
+    ctx.moveTo(22, -44 + breath);
+    ctx.lineTo(25, -52 + breath);
+    ctx.lineTo(29, -56 + breath);
+    ctx.stroke();
+
+    // Subtle moonlit/starlit rim highlight so the deer is softly visible against dark woods
+    ctx.strokeStyle =
+      deer.phase === "flying"
+        ? "rgba(255, 250, 220, 0.9)"
+        : "rgba(186, 206, 238, 0.28)";
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(-1, -23 + breath, 18.5, Math.PI * 1.1, Math.PI * 1.85);
+    ctx.stroke();
+
+    // Soft bright eye
+    ctx.fillStyle = deer.phase === "flying" ? "#fff8d6" : "rgba(235, 240, 255, 0.65)";
+    ctx.beginPath();
+    ctx.arc(26.5, -41.5 + breath, 1.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawMagicSparkles(now) {
+    for (const m of magicSparkles) {
+      const twinkle = 0.55 + 0.45 * Math.sin(now * 0.02 + m.x);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, m.life * twinkle);
+      ctx.fillStyle = m.hue;
+      ctx.translate(m.x, m.y);
+      // 4-point star sparkle
+      const r = m.size;
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 1.8);
+      ctx.lineTo(r * 0.45, -r * 0.45);
+      ctx.lineTo(r * 1.8, 0);
+      ctx.lineTo(r * 0.45, r * 0.45);
+      ctx.lineTo(0, r * 1.8);
+      ctx.lineTo(-r * 0.45, r * 0.45);
+      ctx.lineTo(-r * 1.8, 0);
+      ctx.lineTo(-r * 0.45, -r * 0.45);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   function drawMoon(mx, my) {
     ctx.save();
-    // Soft moon halo
     const halo = ctx.createRadialGradient(mx, my, 12, mx, my, 110);
     halo.addColorStop(0, "rgba(220, 232, 255, 0.18)");
     halo.addColorStop(1, "rgba(220, 232, 255, 0)");
@@ -1178,13 +1504,11 @@
     ctx.arc(mx, my, 110, 0, Math.PI * 2);
     ctx.fill();
 
-    // Moon disc
     ctx.fillStyle = "#eef2fa";
     ctx.beginPath();
     ctx.arc(mx, my, 22, 0, Math.PI * 2);
     ctx.fill();
 
-    // Crescent shadow
     ctx.fillStyle = "#070f20";
     ctx.beginPath();
     ctx.arc(mx + 8, my - 4, 19, 0, Math.PI * 2);
@@ -1210,12 +1534,11 @@
         ctx.fill();
       }
 
-      // Subtle warm edge highlight on foreground trees facing the fire
       if (fireGlow > 0.05) {
         const dist = Math.abs(t.x - firePos.x);
         const reach = state.width * 0.45;
         if (dist < reach) {
-          const edgeAlpha = (1 - dist / reach) * 0.09 * Math.min(fireGlow, 1.2);
+          const edgeAlpha = (1 - dist / reach) * 0.09 * Math.min(fireGlow, 1.1);
           ctx.fillStyle = `rgba(255, 148, 64, ${edgeAlpha})`;
           const side = t.x < firePos.x ? 1 : -1;
           ctx.beginPath();
@@ -1288,19 +1611,17 @@
       ctx.restore();
     }
 
-    // Flames
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
+    // Flames (standard source-over radial gradients avoid mobile Firefox lighter-blend glitches)
     for (const p of flames) {
       const radius = p.size * (0.4 + p.life * 0.8);
       const grad = ctx.createRadialGradient(p.x, p.y, 1, p.x, p.y, radius);
       if (p.life > 0.65) {
-        grad.addColorStop(0, `rgba(255, 245, 190, ${p.life * 0.85})`);
-        grad.addColorStop(0.45, `rgba(255, 165, 52, ${p.life * 0.65})`);
+        grad.addColorStop(0, `rgba(255, 248, 200, ${p.life * 0.88})`);
+        grad.addColorStop(0.45, `rgba(255, 165, 52, ${p.life * 0.68})`);
         grad.addColorStop(1, "rgba(255, 80, 15, 0)");
       } else {
-        grad.addColorStop(0, `rgba(255, 158, 48, ${p.life * 0.72})`);
-        grad.addColorStop(0.5, `rgba(228, 72, 16, ${p.life * 0.45})`);
+        grad.addColorStop(0, `rgba(255, 162, 50, ${p.life * 0.74})`);
+        grad.addColorStop(0.5, `rgba(228, 72, 16, ${p.life * 0.48})`);
         grad.addColorStop(1, "rgba(160, 28, 8, 0)");
       }
       ctx.fillStyle = grad;
@@ -1316,7 +1637,6 @@
       ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.restore();
 
     // Front half of stone ring
     for (const s of stones) {
@@ -1334,7 +1654,6 @@
     ctx.ellipse(0, 0, s.rx, s.ry, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Rim highlight facing fire
     if (glowStrength > 0.05) {
       ctx.strokeStyle = `rgba(255, 174, 88, ${0.22 * Math.min(glowStrength, 1)})`;
       ctx.lineWidth = 1.2;
@@ -1357,7 +1676,6 @@
     ctx.roundRect(-length / 2, -thickness / 2, length, thickness, thickness / 2);
     ctx.fill();
 
-    // Bark highlight
     ctx.strokeStyle = `rgba(255, 178, 96, ${0.12 + glowStrength * 0.22})`;
     ctx.lineWidth = 1.2;
     ctx.beginPath();
@@ -1372,9 +1690,15 @@
     const tipX = state.pointer.x;
     const tipY = state.pointer.y;
 
-    // Anchor handle toward bottom-right corner
-    const handleX = Math.min(state.width + 60, Math.max(tipX + 180, state.width * 0.88));
-    const handleY = Math.min(state.height + 60, Math.max(tipY + 130, state.height * 0.94));
+    // Fixed, natural stick length angled gently toward bottom-right so it never stretches across desktop screens
+    const stickLength = Math.min(230, Math.max(155, state.width * 0.22));
+    const anchorX = tipX + 185;
+    const anchorY = tipY + 125;
+    const dx = anchorX - tipX;
+    const dy = anchorY - tipY;
+    const len = Math.hypot(dx, dy) || 1;
+    const handleX = tipX + (dx / len) * stickLength;
+    const handleY = tipY + (dy / len) * stickLength;
     const angle = Math.atan2(tipY - handleY, tipX - handleX);
 
     ctx.save();
@@ -1403,10 +1727,15 @@
     if (state.mode === "marshmallow") {
       const color = lerpRoastColor("marshmallow", state.roastLevel);
 
-      // Golden perfection aura
+      // Soft golden glow (radial gradient instead of shadowBlur for mobile Firefox stability)
       if (state.roastLevel >= 50 && state.roastLevel < 88) {
-        ctx.shadowColor = "rgba(255, 186, 86, 0.55)";
-        ctx.shadowBlur = 12;
+        const g = ctx.createRadialGradient(0, 0, 6, 0, 0, 26);
+        g.addColorStop(0, "rgba(255, 190, 92, 0.42)");
+        g.addColorStop(1, "rgba(255, 190, 92, 0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, 26, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       ctx.fillStyle = color;
@@ -1414,8 +1743,6 @@
       ctx.roundRect(-14, -10, 26, 20, 6);
       ctx.fill();
 
-      // Subtle toasted sheen
-      ctx.shadowBlur = 0;
       ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
       ctx.beginPath();
       ctx.roundRect(-10, -7, 16, 5, 3);
@@ -1424,17 +1751,20 @@
       const color = lerpRoastColor("hotdog", state.roastLevel);
 
       if (state.roastLevel >= 52 && state.roastLevel < 90) {
-        ctx.shadowColor = "rgba(255, 148, 66, 0.45)";
-        ctx.shadowBlur = 10;
+        const g = ctx.createRadialGradient(0, 0, 8, 0, 0, 32);
+        g.addColorStop(0, "rgba(255, 152, 72, 0.36)");
+        g.addColorStop(1, "rgba(255, 152, 72, 0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, 32, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.roundRect(-24, -8, 48, 16, 8);
       ctx.fill();
-      ctx.shadowBlur = 0;
 
-      // Grill marks
       if (state.roastLevel > 35) {
         ctx.strokeStyle = `rgba(38, 12, 8, ${Math.min(0.7, (state.roastLevel - 30) / 80)})`;
         ctx.lineWidth = 2;
@@ -1446,7 +1776,6 @@
         }
       }
 
-      // Juicy sheen
       ctx.fillStyle = "rgba(255, 232, 210, 0.22)";
       ctx.beginPath();
       ctx.roundRect(-16, -5, 30, 3.5, 2);
@@ -1468,6 +1797,6 @@
     requestAnimationFrame(frame);
   }
 
-  resize();
+  resize(true);
   requestAnimationFrame(frame);
 })();
